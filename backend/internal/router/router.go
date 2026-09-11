@@ -29,6 +29,7 @@ func New(db *gorm.DB) *gin.Engine {
 		service.NewTransferService(db),
 		service.NewResultService(db),
 	)
+	prodH := handler.NewProductionHandler(service.NewProductionService(db))
 	meta := handler.NewMetaHandler(db)
 
 	api := r.Group("/api/v1")
@@ -41,6 +42,20 @@ func New(db *gorm.DB) *gin.Engine {
 		api.GET("/samples/:id", sampleH.Detail)
 		api.POST("/samples/:id/transfers", sampleH.CreateTransfer)
 		api.POST("/samples/:id/results", sampleH.CreateResult)
+
+		// 工艺 / 机台
+		api.GET("/processes", prodH.ListProcesses)
+		api.GET("/machines", prodH.ListMachines)
+		api.PUT("/machines/:id/status", prodH.UpdateMachineStatus)
+		api.GET("/machines/:id/status-logs", prodH.ListMachineLogs)
+
+		// 晶圆批次与加工
+		api.GET("/lots", prodH.ListLots)
+		api.POST("/lots", prodH.CreateLot)
+		api.GET("/lots/:id", prodH.GetLot)
+		api.POST("/lots/:id/start", prodH.StartProcess)
+		api.POST("/lots/:id/end", prodH.EndProcess)
+		api.POST("/lots/:id/complete", prodH.CompleteLot)
 	}
 	return r
 }

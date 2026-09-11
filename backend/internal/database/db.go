@@ -54,6 +54,12 @@ func Open() (*gorm.DB, error) {
 		&model.Sample{},
 		&model.Transfer{},
 		&model.TestResult{},
+		&model.Process{},
+		&model.Machine{},
+		&model.WaferLot{},
+		&model.LotDailySeq{},
+		&model.LotProcessRecord{},
+		&model.MachineStatusLog{},
 	); err != nil {
 		return nil, fmt.Errorf("自动迁移失败: %w", err)
 	}

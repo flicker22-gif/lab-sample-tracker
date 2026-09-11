@@ -5,7 +5,7 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: '/samples',
+      redirect: '/lots',
     },
     {
       path: '/samples',
@@ -17,6 +17,22 @@ const router = createRouter({
       name: 'sample-detail',
       component: () => import('@/views/SampleDetailView.vue'),
       props: (route) => ({ id: Number(route.params.id) }),
+    },
+    {
+      path: '/lots',
+      name: 'lots',
+      component: () => import('@/views/LotListView.vue'),
+    },
+    {
+      path: '/lots/:id',
+      name: 'lot-detail',
+      component: () => import('@/views/LotDetailView.vue'),
+      props: (route) => ({ id: Number(route.params.id) }),
+    },
+    {
+      path: '/machines',
+      name: 'machines',
+      component: () => import('@/views/MachineBoardView.vue'),
     },
   ],
 })

@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { computed, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { useMetaStore } from '@/stores/meta'
 
 const meta = useMetaStore()
+const route = useRoute()
 onMounted(() => meta.load())
+
+// 详情页时高亮所属一级菜单
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/lots')) return '/lots'
+  if (route.path.startsWith('/machines')) return '/machines'
+  return '/samples'
+})
 </script>
 
 <template>
@@ -11,9 +20,17 @@ onMounted(() => meta.load())
     <el-header class="app-header">
       <div class="logo">
         <el-icon :size="22"><Box /></el-icon>
-        <span>样品全流程追踪系统</span>
+        <span>样品与生产追踪系统</span>
       </div>
-      <el-menu mode="horizontal" :default-active="$route.path" router class="app-menu">
+      <el-menu mode="horizontal" :default-active="activeMenu" router class="app-menu">
+        <el-menu-item index="/lots">
+          <el-icon><Histogram /></el-icon>
+          <span>批次管理</span>
+        </el-menu-item>
+        <el-menu-item index="/machines">
+          <el-icon><Cpu /></el-icon>
+          <span>机台看板</span>
+        </el-menu-item>
         <el-menu-item index="/samples">
           <el-icon><List /></el-icon>
           <span>样品管理</span>
