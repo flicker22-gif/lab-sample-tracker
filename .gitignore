@@ -1,0 +1,21 @@
+# 前端
+frontend/node_modules/
+frontend/dist/
+
+# Go
+backend/server
+backend/*.out
+*.test
+
+# 环境/编辑器
+.env
+.env.local
+.idea/
+.vscode/
+*.log
+
+# 系统
+.DS_Store
+
+# TS build info
+*.tsbuildinfo
