@@ -149,6 +149,17 @@ func (s *ProductionService) CreateLot(req dto.CreateLotRequest) (*model.WaferLot
 	if err != nil {
 		return nil, err
 	}
+
+	// 按晶圆数量创建槽位（失败不阻断批次创建，可后续补录）
+	if lot.WaferCount > 0 {
+		wafers := make([]model.Wafer, 0, lot.WaferCount)
+		for slot := 1; slot <= lot.WaferCount; slot++ {
+			wafers = append(wafers, model.Wafer{
+				LotID: lot.ID, SlotNo: slot, Product: lot.Product,
+			})
+		}
+		_ = s.db.Create(&wafers).Error
+	}
 	return lot, nil
 }
 

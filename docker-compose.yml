@@ -26,9 +26,12 @@ services:
       DB_USER: tracker
       DB_PASSWORD: tracker
       DB_NAME: tracker
+      MAP_STORAGE_DIR: /data/maps
       TZ: Asia/Shanghai
     ports:
       - "8080:8080"
+    volumes:
+      - mapdata:/data/maps
     depends_on:
       postgres:
         condition: service_healthy
@@ -45,3 +48,4 @@ services:
 
 volumes:
   pgdata:
+  mapdata:

@@ -69,6 +69,31 @@ docker compose up -d --build
 
 > 并发安全：开始加工对批次和机台都加了 `SELECT ... FOR UPDATE` 行锁，同一批次不能同时开两条加工、同一机台不会被两个批次同时占用。
 
+### 4. Wafer Bin Map 上传与缺陷分布可视化
+
+**批次详情 →「晶圆 Map」**：批次创建时按晶圆数量自动生成槽位（#1…#N）。
+
+- 选择槽位 → 上传该片的 **bin map 文件**，后端解析网格、bin 定义、缺口方向，并计算晶粒总数/合格数/良率/各 bin 数量。
+- **Canvas 可视化**：圆形晶圆 + 缺口、晶粒按 bin 上色、鼠标悬浮显示 `(行,列) · bin`、点击图例可隐藏/显示某个 bin、右侧展示良率与 bin 汇总（缺陷集中区域一眼可见）。
+- 同一晶圆多次上传保留**历史版本**，可切换查看并下载原始文件；原始文件持久化到 `MAP_STORAGE_DIR`（容器内 `/data/maps`，compose 已挂卷）。
+- 单文件上限 16MB，网格上限 1000×1000。
+
+**Bin map 文件格式**（纯文本，`backend/examples/wafer_map_example.txt` 有可直接上传的样例）：
+
+```text
+# 以 # 或 // 开头为注释
+Notch: down                 # 缺口方向 up/down/left/right，可省略（默认 down）
+BinDef: 1,Pass,#2ecc71,pass  # bin号,名称,#颜色,pass|fail
+BinDef: 2,Edge fail,#f39c12,fail
+DieSize: 5000,5000          # 可选，仅记录
+Grid:
+. . 1 1 2 .
+. 1 1 1 2 .
+. 1 1 3 2 .
+```
+
+- 也可以**只给网格**（逗号或空格分隔的 CSV）：整数是 bin 号，`.` `-` `x` `na` 为空晶粒，未声明的 bin 自动配色（约定 bin 1 为合格）。
+
 ## 本地开发
 
 ### 后端
@@ -119,6 +144,11 @@ npm run build
 | POST | `/api/v1/lots/:id/start` | 开始加工（选机台+操作员） |
 | POST | `/api/v1/lots/:id/end` | 结束加工（结果/产出，自动算时长） |
 | POST | `/api/v1/lots/:id/complete` | 批次完工 |
+| GET | `/api/v1/lots/:id/wafers` | 批次下的晶圆槽位（含当前 map 汇总） |
+| GET | `/api/v1/wafers/:id/maps` | 单片晶圆的 map 版本列表 |
+| POST | `/api/v1/wafers/:id/maps` | 上传 bin map（multipart：file/operator_id/remark） |
+| GET | `/api/v1/maps/:id` | map 详情（含网格 JSON、bin 定义、汇总） |
+| GET | `/api/v1/maps/:id/download` | 下载原始文件 |
 
 统一响应：`{ "code": 0, "message": "ok", "data": ... }`。
 
@@ -159,6 +189,11 @@ curl -X POST http://localhost:8080/api/v1/lots/1/end \
 curl -X PUT http://localhost:8080/api/v1/machines/4/status \
   -H 'Content-Type: application/json' \
   -d '{"status":"maintenance","operator_id":2,"reason":"定期保养"}'
+
+# 给 1 号晶圆上传 bin map
+curl -X POST http://localhost:8080/api/v1/wafers/1/maps \
+  -F operator_id=1 -F remark="刻蚀后量测" \
+  -F file=@backend/examples/wafer_map_example.txt
 ```
 
 ## 数据模型
@@ -176,6 +211,8 @@ daily_seqs     样品编号按天自增序列
 processes            工艺（一道工艺多台机台）
 machines             机台（归属工艺、状态、当前加工批次）
 wafer_lots           晶圆批次（批次号、片数、状态、当前工艺）
+wafers               晶圆（批次槽位 1..N、当前 map）
+wafer_bin_maps       bin map（JSONB 网格、bin 定义、良率/bin 汇总、版本、原始文件路径）
 lot_daily_seqs       批次号按天自增序列
 lot_process_records  加工记录（批次×工艺×机台×操作员，开始/结束时间、时长、结果、产出）
 machine_status_logs  机台状态变更记录
@@ -190,20 +227,22 @@ machine_status_logs  机台状态变更记录
 ├── backend/
 │   ├── cmd/server/main.go
 │   ├── internal/
-│   │   ├── model/       # GORM 模型
+│   │   ├── model/       # GORM 模型（含 JSONB map 类型）
+│   │   ├── binmap/      # bin map 文本解析器（含单元测试）
 │   │   ├── dto/         # 请求/响应结构
 │   │   ├── database/    # 连接、迁移、种子数据
-│   │   ├── service/     # 业务逻辑（编号生成、事务）
+│   │   ├── service/     # 业务逻辑（编号生成、事务、map 解析汇总）
 │   │   ├── handler/     # Gin 控制器
 │   │   └── router/
+│   ├── examples/        # 可直接上传的 wafer map 样例
 │   └── Dockerfile
 ├── frontend/
 │   ├── src/
 │   │   ├── api/         # axios 封装与接口
 │   │   ├── stores/      # Pinia: sample / meta / production
 │   │   ├── types/       # 与后端对应的 TS 类型
-│   │   ├── views/       # 批次列表/详情、机台看板、样品列表/详情
-│   │   └── components/  # 新增样品/批次、流转、加工开始/结束、结果登记对话框
+│   │   ├── views/       # 批次列表/详情、机台看板、晶圆 Map、样品列表/详情
+│   │   └── components/  # 加工/流转/上传对话框、WaferMapCanvas 渲染组件
 │   └── Dockerfile + nginx.conf
 └── docker-compose.yml
 ```
@@ -216,3 +255,4 @@ machine_status_logs  机台状态变更记录
 - 流转事件的完整审计日志（含修改/删除留痕）
 - 工艺路线（按产品配置工序顺序与必过工艺）、批次跳站/返工流转校验
 - 机台 OEE 统计、加工节拍/时长分析、与 MES/EAP 设备联机自动采集状态
+- Wafer map：对接 STDF / KLA / KLARF 等量测格式、缺陷坐标散点叠加、跨片/跨批缺陷模式聚类与 SPC 报警、map 文件对象存储（S3/MinIO）

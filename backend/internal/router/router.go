@@ -30,6 +30,7 @@ func New(db *gorm.DB) *gin.Engine {
 		service.NewResultService(db),
 	)
 	prodH := handler.NewProductionHandler(service.NewProductionService(db))
+	waferH := handler.NewWaferHandler(service.NewWaferService(db))
 	meta := handler.NewMetaHandler(db)
 
 	api := r.Group("/api/v1")
@@ -56,6 +57,13 @@ func New(db *gorm.DB) *gin.Engine {
 		api.POST("/lots/:id/start", prodH.StartProcess)
 		api.POST("/lots/:id/end", prodH.EndProcess)
 		api.POST("/lots/:id/complete", prodH.CompleteLot)
+		api.GET("/lots/:id/wafers", waferH.ListByLot)
+
+		// 晶圆 bin map
+		api.GET("/wafers/:id/maps", waferH.ListVersions)
+		api.POST("/wafers/:id/maps", waferH.UploadMap)
+		api.GET("/maps/:id", waferH.GetMap)
+		api.GET("/maps/:id/download", waferH.DownloadMap)
 	}
 	return r
 }

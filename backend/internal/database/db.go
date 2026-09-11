@@ -60,6 +60,8 @@ func Open() (*gorm.DB, error) {
 		&model.LotDailySeq{},
 		&model.LotProcessRecord{},
 		&model.MachineStatusLog{},
+		&model.Wafer{},
+		&model.WaferBinMap{},
 	); err != nil {
 		return nil, fmt.Errorf("自动迁移失败: %w", err)
 	}

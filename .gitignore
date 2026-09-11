@@ -19,3 +19,6 @@ backend/*.out
 
 # TS build info
 *.tsbuildinfo
+
+# 上传的 bin map 原始文件
+backend/data/

@@ -10,6 +10,7 @@ import type { LotStatus, ProcessRecord, ProcessResultValue } from '@/types/produ
 import { productionApi } from '@/api/production'
 import StartProcessDialog from '@/components/StartProcessDialog.vue'
 import EndProcessDialog from '@/components/EndProcessDialog.vue'
+import WaferMapDrawer from '@/components/WaferMapDrawer.vue'
 
 const props = defineProps<{ id: number }>()
 const router = useRouter()
@@ -20,6 +21,7 @@ const startDialog = ref<InstanceType<typeof StartProcessDialog>>()
 const endDialog = ref<InstanceType<typeof EndProcessDialog>>()
 const endingRecord = ref<ProcessRecord | null>(null)
 const completing = ref(false)
+const mapDrawerVisible = ref(false)
 
 async function load() {
   await Promise.all([store.loadMeta(), store.fetchDetail(props.id)])
@@ -67,6 +69,7 @@ function goBack() {
     <div class="page-head">
       <el-button :icon="'ArrowLeft'" link @click="goBack">返回批次列表</el-button>
       <el-space>
+        <el-button plain :icon="'Picture'" @click="mapDrawerVisible = true">晶圆 Map</el-button>
         <el-button v-if="openRecord" type="warning" plain :icon="'VideoPause'" @click="onEnd">结束加工</el-button>
         <el-button v-if="canStart" type="primary" :icon="'VideoPlay'" @click="startDialog?.open()">开始加工</el-button>
         <el-button v-if="canComplete" type="success" plain :icon="'CircleCheck'" :loading="completing" @click="completeLot">
@@ -156,6 +159,7 @@ function goBack() {
 
     <StartProcessDialog ref="startDialog" :lot-id="detail?.id ?? null" @done="load" />
     <EndProcessDialog ref="endDialog" :lot-id="detail?.id ?? null" :record="endingRecord" @done="load" />
+    <WaferMapDrawer v-model="mapDrawerVisible" :lot-id="detail?.id ?? null" />
   </div>
 </template>
 
