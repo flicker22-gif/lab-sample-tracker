@@ -1,47 +1,55 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
 
+	"sample-tracker/internal/apperr"
 	"sample-tracker/internal/dto"
 	"sample-tracker/internal/model"
+	"sample-tracker/internal/repository"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
-var (
-	ErrNotFound     = errors.New("记录不存在")
-	ErrSameLocation = errors.New("目标位置与当前位置相同")
-)
+// SampleService 样品登记与查询
+type SampleService struct {
+	repos *repository.Repositories
+}
 
-type SampleService struct{ db *gorm.DB }
-
-func NewSampleService(db *gorm.DB) *SampleService { return &SampleService{db: db} }
+func NewSampleService(repos *repository.Repositories) *SampleService {
+	return &SampleService{repos: repos}
+}
 
 // Create 新增样品 + 收样首条流转记录（同一事务）
-func (s *SampleService) Create(req dto.CreateSampleRequest) (*model.Sample, error) {
-	var loc model.Location
-	if err := s.db.First(&loc, req.LocationID).Error; err != nil {
-		return nil, ErrNotFound
+func (s *SampleService) Create(ctx context.Context, req dto.CreateSampleRequest) (*model.Sample, error) {
+	loc, err := s.repos.Meta.GetLocation(ctx, req.LocationID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, apperr.BadRequest("接收人或存放位置不存在")
+		}
+		return nil, apperr.Wrap(err, "查询存放位置")
 	}
-	var receiver model.User
-	if err := s.db.First(&receiver, req.ReceiverID).Error; err != nil {
-		return nil, ErrNotFound
+	if _, err := s.repos.Meta.GetUser(ctx, req.ReceiverID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, apperr.BadRequest("接收人或存放位置不存在")
+		}
+		return nil, apperr.Wrap(err, "查询收样人")
 	}
 
 	now := time.Now()
 	var sample *model.Sample
 
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		code, err := s.generateCode(tx, now)
+	err = s.repos.WithTx(ctx, func(tx *repository.Repositories) error {
+		// 编号 SP-YYYYMMDD-NNNN：按天序列原子递增，并发收样不重号
+		seq, err := tx.Samples.NextSampleSeq(ctx, now.Format("20060102"))
 		if err != nil {
-			return err
+			return apperr.Wrap(err, "生成样品编号")
 		}
 		sample = &model.Sample{
-			Code:         code,
+			Code:         fmt.Sprintf("SP-%s-%04d", now.Format("20060102"), seq),
 			Name:         req.Name,
 			Category:     req.Category,
 			Source:       req.Source,
@@ -51,11 +59,11 @@ func (s *SampleService) Create(req dto.CreateSampleRequest) (*model.Sample, erro
 			CurrentLocID: &req.LocationID,
 			Remark:       req.Remark,
 		}
-		if err := tx.Create(sample).Error; err != nil {
+		if err := tx.Samples.CreateSample(ctx, sample); err != nil {
 			if errors.Is(err, gorm.ErrDuplicatedKey) {
-				return fmt.Errorf("样品编号冲突，请重试")
+				return apperr.Conflict("样品编号冲突，请重试")
 			}
-			return err
+			return apperr.Wrap(err, "创建样品")
 		}
 		// 初始状态：存入冰箱→stored；上机→testing；其余保持 received
 		status := model.StatusReceived
@@ -65,10 +73,12 @@ func (s *SampleService) Create(req dto.CreateSampleRequest) (*model.Sample, erro
 		case model.LocDevice:
 			status = model.StatusTesting
 		}
-		if err := tx.Model(sample).Update("status", status).Error; err != nil {
-			return err
+		if status != model.StatusReceived {
+			if err := tx.Samples.UpdateSampleFields(ctx, sample.ID, map[string]any{"status": status}); err != nil {
+				return apperr.Wrap(err, "更新样品状态")
+			}
+			sample.Status = status
 		}
-		sample.Status = status
 
 		transfer := model.Transfer{
 			SampleID:   sample.ID,
@@ -79,7 +89,10 @@ func (s *SampleService) Create(req dto.CreateSampleRequest) (*model.Sample, erro
 			OccurredAt: now,
 			Note:       "收样登记",
 		}
-		return tx.Create(&transfer).Error
+		if err := tx.Samples.CreateTransfer(ctx, &transfer); err != nil {
+			return apperr.Wrap(err, "写入收样流转记录")
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -87,30 +100,8 @@ func (s *SampleService) Create(req dto.CreateSampleRequest) (*model.Sample, erro
 	return sample, nil
 }
 
-// generateCode 生成编号 SP-YYYYMMDD-NNNN。
-// 通过 daily_seqs 表的 INSERT ... ON CONFLICT DO UPDATE 原子递增，并发收样不重号。
-func (s *SampleService) generateCode(tx *gorm.DB, now time.Time) (string, error) {
-	day := now.Format("20060102")
-	seq := model.DailySeq{Day: day, Value: 1}
-	if err := tx.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "day"}},
-		DoUpdates: clause.Assignments(map[string]any{
-			"value":      gorm.Expr("daily_seqs.value + 1"),
-			"updated_at": gorm.Expr("now()"),
-		}),
-	}).Create(&seq).Error; err != nil {
-		return "", err
-	}
-	var v int
-	if err := tx.Model(&model.DailySeq{}).Select("value").
-		Where("day = ?", day).Scan(&v).Error; err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("SP-%s-%04d", day, v), nil
-}
-
 // List 分页查询样品
-func (s *SampleService) List(q dto.SampleQuery) (*dto.PageResult[dto.SampleVO], error) {
+func (s *SampleService) List(ctx context.Context, q dto.SampleQuery) (*dto.PageResult[dto.SampleVO], error) {
 	page := q.Page
 	if page < 1 {
 		page = 1
@@ -120,62 +111,43 @@ func (s *SampleService) List(q dto.SampleQuery) (*dto.PageResult[dto.SampleVO], 
 		size = 20
 	}
 
-	tx := s.db.Model(&model.Sample{})
-	if q.Keyword != "" {
-		kw := "%" + q.Keyword + "%"
-		tx = tx.Where("code ILIKE ? OR name ILIKE ?", kw, kw)
-	}
-	if q.Status != "" {
-		tx = tx.Where("status = ?", q.Status)
-	}
-
-	var total int64
-	if err := tx.Count(&total).Error; err != nil {
-		return nil, err
-	}
-
-	var samples []model.Sample
-	if err := tx.Preload("Receiver").Preload("CurrentLoc").
-		Order("received_at DESC, id DESC").
-		Offset((page - 1) * size).Limit(size).
-		Find(&samples).Error; err != nil {
-		return nil, err
+	samples, total, err := s.repos.Samples.ListSamples(ctx, repository.SampleFilter{
+		Keyword: q.Keyword,
+		Status:  q.Status,
+		Offset:  (page - 1) * size,
+		Limit:   size,
+	})
+	if err != nil {
+		return nil, apperr.Wrap(err, "查询样品列表")
 	}
 
 	list := make([]dto.SampleVO, 0, len(samples))
-	for _, sp := range samples {
-		list = append(list, toSampleVO(&sp))
+	for i := range samples {
+		list = append(list, toSampleVO(&samples[i]))
 	}
 	return &dto.PageResult[dto.SampleVO]{List: list, Total: total, Page: page, PageSize: size}, nil
 }
 
 // Get 样品详情（含流转轨迹与检测结果）
-func (s *SampleService) Get(id uint) (*dto.SampleDetailVO, error) {
-	var sample model.Sample
-	if err := s.db.Preload("Receiver").Preload("CurrentLoc").First(&sample, id).Error; err != nil {
+func (s *SampleService) Get(ctx context.Context, id uint) (*dto.SampleDetailVO, error) {
+	sample, err := s.repos.Samples.GetSampleByID(ctx, id)
+	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrNotFound
+			return nil, apperr.NotFound("样品不存在")
 		}
-		return nil, err
+		return nil, apperr.Wrap(err, "查询样品")
 	}
 
-	var transfers []model.Transfer
-	if err := s.db.Where("sample_id = ?", id).
-		Preload("FromLoc").Preload("ToLoc").Preload("Operator").
-		Order("occurred_at ASC, id ASC").
-		Find(&transfers).Error; err != nil {
-		return nil, err
+	transfers, err := s.repos.Samples.ListTransfersBySample(ctx, id)
+	if err != nil {
+		return nil, apperr.Wrap(err, "查询流转记录")
+	}
+	results, err := s.repos.Samples.ListResultsBySample(ctx, id)
+	if err != nil {
+		return nil, apperr.Wrap(err, "查询检测结果")
 	}
 
-	var results []model.TestResult
-	if err := s.db.Where("sample_id = ?", id).
-		Preload("Analyst").
-		Order("created_at DESC, id DESC").
-		Find(&results).Error; err != nil {
-		return nil, err
-	}
-
-	vo := &dto.SampleDetailVO{SampleVO: toSampleVO(&sample)}
+	vo := &dto.SampleDetailVO{SampleVO: toSampleVO(sample)}
 	vo.Transfers = make([]dto.TransferVO, 0, len(transfers))
 	for i := range transfers {
 		vo.Transfers = append(vo.Transfers, toTransferVO(&transfers[i]))

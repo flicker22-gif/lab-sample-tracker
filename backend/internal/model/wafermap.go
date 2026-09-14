@@ -9,11 +9,15 @@ import (
 
 // Wafer 晶圆（属于一个批次，槽位 1..N）
 type Wafer struct {
-	ID           uint           `gorm:"primaryKey" json:"id"`
-	LotID        uint           `gorm:"not null;index" json:"lot_id"`
-	Lot          *WaferLot      `gorm:"foreignKey:LotID" json:"lot,omitempty"`
-	SlotNo       int            `gorm:"not null" json:"slot_no"` // 槽位号
-	WaferID      string         `gorm:"size:64" json:"wafer_id"` // 晶圆标识/刻号
+	ID     uint     `gorm:"primaryKey" json:"id"`
+	LotID  uint     `gorm:"not null;index" json:"lot_id"`
+	Lot    *WaferLot `gorm:"foreignKey:LotID" json:"lot,omitempty"`
+	SlotNo int      `gorm:"not null" json:"slot_no"` // 槽位号
+	// Scribe 晶圆标识/刻号（数据库列名 wafer_id）。
+	// 注意：Go 字段名不能叫 WaferID——GORM 解析 WaferBinMap.Wafer 关系时
+	// 会按 foreignKey:WaferID 在 Wafer 上找到同名字段，把它误建成指向
+	// wafer_bin_maps 的 bigint 外键列（历史迁移 0002 已修复该缺陷）。
+	Scribe       string         `gorm:"column:wafer_id;size:64" json:"wafer_id"`
 	Product      string         `gorm:"size:128" json:"product"`
 	CurrentMapID *uint          `gorm:"index" json:"current_map_id"` // 当前生效的 map 版本
 	CurrentMap   *WaferBinMap   `gorm:"foreignKey:CurrentMapID" json:"current_map,omitempty"`
@@ -35,7 +39,7 @@ type BinDef struct {
 type WaferBinMap struct {
 	ID       uint   `gorm:"primaryKey" json:"id"`
 	WaferID  uint   `gorm:"not null;index" json:"wafer_id"`
-	Wafer    *Wafer `gorm:"foreignKey:WaferID" json:"wafer,omitempty"`
+	Wafer    *Wafer `gorm:"foreignKey:WaferID;references:ID" json:"wafer,omitempty"`
 	Version  int    `gorm:"not null;default:1" json:"version"`
 	FileName string `gorm:"size:256" json:"file_name"`
 	FilePath string `gorm:"size:512" json:"-"` // 原始文件落盘路径

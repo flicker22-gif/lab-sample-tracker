@@ -1,45 +1,59 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"time"
 
+	"sample-tracker/internal/apperr"
 	"sample-tracker/internal/dto"
 	"sample-tracker/internal/model"
+	"sample-tracker/internal/repository"
 
 	"gorm.io/gorm"
 )
 
-type TransferService struct{ db *gorm.DB }
+// TransferService 样品流转登记
+type TransferService struct {
+	repos *repository.Repositories
+}
 
-func NewTransferService(db *gorm.DB) *TransferService { return &TransferService{db: db} }
+func NewTransferService(repos *repository.Repositories) *TransferService {
+	return &TransferService{repos: repos}
+}
 
 // Create 登记一次流转：校验位置、记录轨迹、更新样品当前位置与状态（同一事务）
-func (s *TransferService) Create(req dto.CreateTransferRequest) (*dto.TransferVO, error) {
+func (s *TransferService) Create(ctx context.Context, req dto.CreateTransferRequest) (*dto.TransferVO, error) {
 	if req.FromLocID != nil && *req.FromLocID == req.ToLocID {
-		return nil, ErrSameLocation
+		return nil, apperr.BadRequest("目标位置与来源位置不能相同")
 	}
 
 	var vo dto.TransferVO
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		var sample model.Sample
-		if err := tx.First(&sample, req.SampleID).Error; err != nil {
+	err := s.repos.WithTx(ctx, func(tx *repository.Repositories) error {
+		sample, err := tx.Samples.GetSampleByID(ctx, req.SampleID)
+		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNotFound
+				return apperr.BadRequest("样品、位置或操作人不存在")
 			}
-			return err
+			return apperr.Wrap(err, "查询样品")
 		}
 		if sample.Status == model.StatusDiscarded {
-			return errors.New("样品已销毁，不能继续流转")
+			return apperr.BadRequest("样品已销毁，不能继续流转")
 		}
 
-		var toLoc model.Location
-		if err := tx.First(&toLoc, req.ToLocID).Error; err != nil {
-			return ErrNotFound
+		toLoc, err := tx.Meta.GetLocation(ctx, req.ToLocID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return apperr.BadRequest("样品、位置或操作人不存在")
+			}
+			return apperr.Wrap(err, "查询目标位置")
 		}
-		var operator model.User
-		if err := tx.First(&operator, req.OperatorID).Error; err != nil {
-			return ErrNotFound
+		operator, err := tx.Meta.GetUser(ctx, req.OperatorID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return apperr.BadRequest("样品、位置或操作人不存在")
+			}
+			return apperr.Wrap(err, "查询操作人")
 		}
 
 		fromID := req.FromLocID
@@ -47,7 +61,7 @@ func (s *TransferService) Create(req dto.CreateTransferRequest) (*dto.TransferVO
 			fromID = sample.CurrentLocID // 默认从当前位置移出
 		}
 		if fromID != nil && *fromID == req.ToLocID {
-			return ErrSameLocation
+			return apperr.BadRequest("目标位置与来源位置不能相同")
 		}
 
 		occurredAt := time.Now()
@@ -64,8 +78,8 @@ func (s *TransferService) Create(req dto.CreateTransferRequest) (*dto.TransferVO
 			OccurredAt: occurredAt,
 			Note:       req.Note,
 		}
-		if err := tx.Create(&transfer).Error; err != nil {
-			return err
+		if err := tx.Samples.CreateTransfer(ctx, &transfer); err != nil {
+			return apperr.Wrap(err, "写入流转记录")
 		}
 
 		// 更新样品当前位置与状态
@@ -82,14 +96,13 @@ func (s *TransferService) Create(req dto.CreateTransferRequest) (*dto.TransferVO
 		default:
 			updates["status"] = model.StatusReceived
 		}
-		if err := tx.Model(&sample).Updates(updates).Error; err != nil {
-			return err
+		if err := tx.Samples.UpdateSampleFields(ctx, sample.ID, updates); err != nil {
+			return apperr.Wrap(err, "更新样品位置与状态")
 		}
 
 		// 组装返回
 		if fromID != nil {
-			var fromLoc model.Location
-			if err := tx.First(&fromLoc, *fromID).Error; err == nil {
+			if fromLoc, err := tx.Meta.GetLocation(ctx, *fromID); err == nil {
 				vo.FromLocID = &fromLoc.ID
 				vo.FromLocName = fromLoc.Name
 				vo.FromLocType = string(fromLoc.Type)
